@@ -1,0 +1,17 @@
+jobmanager.rpc.address: jobmanager
+jobmanager.memory.process.size: 1600m
+jobmanager.memory.heap.size: 1024m
+jobmanager.memory.jvm-metaspace.size: 256m
+
+taskmanager.numberOfTaskSlots: 6
+taskmanager.memory.process.size: 2048m
+taskmanager.memory.task.heap.size: 512m
+taskmanager.memory.managed.size: 512m
+taskmanager.memory.network.min: 128m
+taskmanager.memory.network.max: 128m
+
+metrics.reporters: prom
+metrics.reporter.prom.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+metrics.reporter.prom.port: 9249
+blob.server.port: 6124
+query.server.port: 6125

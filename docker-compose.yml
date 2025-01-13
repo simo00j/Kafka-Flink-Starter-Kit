@@ -1,0 +1,175 @@
+version: '3.8'
+
+services:
+# Data Generator Service
+  data-generator:
+    build:
+      context: .
+      dockerfile: infrastructure/data_generator_containers/Dockerfile
+    container_name: data-generator
+    depends_on:
+      - kafka-broker-1
+      - postgres
+    environment:
+      STREAM_DATA_SOURCE: ${STREAM_DATA_SOURCE}
+    networks:
+      - kafka-net
+
+
+# Kafka Services
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.7.1
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_CLIENT_PORT}
+      ZOOKEEPER_TICK_TIME: ${ZOOKEEPER_TICK_TIME}
+    ports:
+      - "${ZOOKEEPER_CLIENT_PORT}:${ZOOKEEPER_CLIENT_PORT}"
+    networks:
+      - kafka-net
+
+
+  kafka-broker-1:
+    image: confluentinc/cp-kafka:7.7.1
+    container_name: kafka-broker-1
+    hostname: kafka-broker-1
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: ${KAFKA_BROKER_ID}
+      KAFKA_ZOOKEEPER_CONNECT: ${KAFKA_ZOOKEEPER_CONNECT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: ${KAFKA_LISTENER_SECURITY_PROTOCOL_MAP}
+      KAFKA_ADVERTISED_LISTENERS: ${KAFKA_ADVERTISED_LISTENERS}
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR}
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE}
+    ports:
+      - "${KAFKA_EXTERNAL_BROKER_PORT}:${KAFKA_EXTERNAL_BROKER_PORT}"
+    networks:
+      - kafka-net
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "${KAFKA_INTERNAL_BROKER_PORT}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  topic-manager:
+    build:
+      context: ./infrastructure/kafka_setup/topic_management
+    depends_on:
+      kafka-broker-1:
+        condition: service_healthy
+    environment:
+      ADMIN_BOOTSTRAP_SERVERS: kafka-broker-1:${KAFKA_INTERNAL_BROKER_PORT}
+    networks:
+      - kafka-net
+    restart: "no"
+#  Flink Services
+  jobmanager:
+    container_name: jobmanager
+    build:
+      context: ./infrastructure/flink_containers
+    ports:
+      - "${FLINK_JOBMANAGER_PORT}:${FLINK_JOBMANAGER_PORT}"
+      - "${FLINK_JOBMANAGER_METRICS_PORT}:${FLINK_JOBMANAGER_METRICS_PORT}"
+    command: jobmanager
+    volumes:
+      - ./examples:/opt/flink/code
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+    networks:
+      - kafka-net
+
+  taskmanager:
+    container_name: taskmanager
+    build:
+      context: ./infrastructure/flink_containers
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    ports:
+      - "${FLINK_TASKMANAGER_METRICS_PORT}:${FLINK_TASKMANAGER_METRICS_PORT}"
+    volumes:
+      - ./examples:/opt/flink/code
+
+    networks:
+      - kafka-net
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      TASK_MANAGER_NUMBER_OF_TASK_SLOTS: 6
+# Postgres Service
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:${POSTGRES_PORT}"
+    networks:
+      - kafka-net
+# Monitoring Services
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "${PROMETHEUS_PORT}:${PROMETHEUS_PORT}"
+    networks:
+      - kafka-net
+    depends_on:
+      - jobmanager
+      - taskmanager
+      - kafka-broker-1
+      - postgres
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "${GRAFANA_PORT}:${GRAFANA_PORT}"
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./infrastructure/grafana/provisioning/:/etc/grafana/provisioning/
+      - ./infrastructure/grafana/dashboards/:/var/lib/grafana/dashboards/
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: 'admin'  # Set a strong password
+    depends_on:
+      - prometheus
+    networks:
+      - kafka-net
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: kafka-exporter
+    ports:
+      - "${KAFKA_EXPORTER_PORT}:${KAFKA_EXPORTER_PORT}"
+    command: [ "--kafka.server=${ADMIN_BOOTSTRAP_SERVERS}" ]
+    depends_on:
+      kafka-broker-1:
+        condition: service_healthy
+    networks:
+      - kafka-net
+    restart: on-failure
+
+  postgres-exporter:
+    image: wrouesnel/postgres_exporter
+    container_name: postgres-exporter
+    ports:
+      - "${POSTGRES_EXPORTER_PORT}:${POSTGRES_EXPORTER_PORT}"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
+    depends_on:
+      - postgres
+    networks:
+      - kafka-net
+
+volumes:
+  grafana-storage:
+networks:
+  kafka-net:
+    driver: bridge
